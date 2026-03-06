@@ -1,3 +1,5 @@
+#Autor: Lidiane Santana de Morais
+#Data: março 2026
 
 # ============================================================
 # GeoRisco GO — Versão 5.0
