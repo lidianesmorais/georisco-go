@@ -19,8 +19,8 @@ from pyproj import Transformer
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 import matplotlib.font_manager as fm
 
-st.set_page_config(page_title="GeoRisco – Goiás", page_icon="🗺️", layout="wide")
-st.title("🗺️ GeoRisco – Goiás")
+st.set_page_config(page_title="GeoRisco – Goiás", layout="wide")
+st.title("GeoRisco – Goiás")
 st.caption("Aplicação interativa para cálculo de risco ambiental em postos de combustíveis no estado de Goiás.")
 
 st.info("""Esta aplicação utiliza **aprendizado de máquina** e **análise espacial** para estimar o
