@@ -534,7 +534,7 @@ O risco calculado pela ferramenta **não substitui uma investigação de passivo
 st.sidebar.header("Configurações")
 
 uploaded_csv = st.sidebar.file_uploader(
-    "1) Arraste e solte o arquivo CSV dos postos aqui",
+    "1) Arraste e solte o arquivo com dados dos postos de combustivéis aqui",
     type=["csv", "xlsx", "geojson", "json"]
 )
 
@@ -545,7 +545,7 @@ uploaded_model = st.sidebar.file_uploader(
 
 st.sidebar.caption("""
 O modelo de previsão de risco é um arquivo treinado com inteligência artificial. Ele
-calcula a probabilidade de contaminação ambiental com base nos dados do posto.
+calcula a probabilidade de contaminação ambiental com base nos dados do posto de combustível.
 """)
 
 hex_size = st.sidebar.slider("3) Tamanho do hexágono (metros)", 2000, 10000, 5000, 500)
