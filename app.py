@@ -1,5 +1,14 @@
+#####Autor: Lidiane S Morais
+#####Data: março de 2026
 
-import io, math, tempfile
+# ============================================================
+# GeoRisco – Goiás
+# Versão final com layout preservado
+# ============================================================
+
+import io
+import math
+import tempfile
 from pathlib import Path
 from datetime import datetime
 
@@ -11,7 +20,6 @@ import streamlit as st
 import folium
 from folium import plugins
 import branca.colormap as cm
-import shap
 
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon
@@ -19,63 +27,57 @@ from pyproj import Transformer
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 import matplotlib.font_manager as fm
 
-st.set_page_config(page_title="GeoRisco – Goiás", layout="wide")
-st.title("GeoRisco – Goiás")
-st.caption("Aplicação interativa para cálculo de risco ambiental em postos de combustíveis no estado de Goiás.")
+st.set_page_config(page_title="GeoRisco – Goiás", page_icon="🗺️", layout="wide")
 
-st.info("""Esta aplicação utiliza **aprendizado de máquina** e **análise espacial** para estimar o
-**risco ambiental de contaminação** em postos de combustíveis no estado de Goiás.
+st.title("🗺️ GeoRisco – Goiás")
+st.caption("Aplicação interativa para cálculo de risco ambiental em postos de combustíveis.")
 
-A ferramenta considera fatores como:
-- presença de água subterrânea;
-- histórico de contaminação;
-- proximidade de poços de água;
-- características estruturais dos tanques;
-- contexto espacial do entorno.""")
-
-ARQUIVO_MODELO_PADRAO = Path("rf_model_com_hidro.joblib")
-ARQUIVO_LIMITE_GOIAS = Path("LimiteEstadoGO/1_Estado-Goias_SIRGAS_Poly.shp")
-ARQUIVO_IMPORTANCIA = Path("rf_feature_importance_com_hidro.csv")
-
-for chave, valor in {
-    "analise_concluida": False,
-    "dados_resultado": None,
-    "coluna_risco": None,
-    "grade_hexagonal": None,
-    "mapa_html": None,
-    "mapa_risco_png": None,
-    "mapa_hotspots_png": None,
-    "estatisticas": None,
-    "modelo_carregado": None,
-    "explainer": None,
-    "nomes_variaveis_transformadas": None,
-    "base_transformada": None,
-}.items():
-    if chave not in st.session_state:
-        st.session_state[chave] = valor
-
-# ------------------------------------------------------------
-# Funções auxiliares
-# ------------------------------------------------------------
-def ler_arquivo(arquivo):
+st.info(
     """
-    Lê automaticamente:
-    - CSV brasileiro
-    - CSV internacional
-    - Excel (.xlsx)
-    - GeoJSON
-    """
-    nome = arquivo.name.lower()
+Esta aplicação utiliza **Machine Learning e análise espacial** para estimar o
+**risco ambiental de contaminação em postos de combustíveis no estado de Goiás**.
+
+O sistema considera fatores como:
+- presença de água subterrânea
+- histórico de contaminação
+- proximidade de poços de água
+- características estruturais dos tanques
+"""
+)
+
+DEFAULT_MODEL_PATH = Path("rf_model_com_hidro.joblib")
+DEFAULT_BOUNDARY_PATH = Path("LimiteEstadoGO/1_Estado-Goias_SIRGAS_Poly.shp")
+
+defaults = {
+    "analysis_done": False,
+    "df_scored": None,
+    "risk_col": None,
+    "hex_grid_wgs": None,
+    "fmap_html": None,
+    "png_risco": None,
+    "png_hotspots": None,
+    "stats": None,
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+
+def ler_planilha_segura(uploaded_file):
+    nome = uploaded_file.name.lower()
 
     if nome.endswith(".xlsx"):
-        return pd.read_excel(arquivo), "xlsx"
+        df = pd.read_excel(uploaded_file)
+        df.columns = [str(c).replace("\ufeff", "").strip() for c in df.columns]
+        return df
 
     if nome.endswith(".geojson") or nome.endswith(".json"):
-        gdf = gpd.read_file(arquivo)
-        return pd.DataFrame(gdf.drop(columns="geometry", errors="ignore")), "geojson"
+        gdf = gpd.read_file(uploaded_file)
+        df = pd.DataFrame(gdf.drop(columns="geometry", errors="ignore"))
+        df.columns = [str(c).replace("\ufeff", "").strip() for c in df.columns]
+        return df
 
-    bruto = arquivo.getvalue()
-
+    raw = uploaded_file.getvalue()
     tentativas = [
         {"encoding": "utf-8", "sep": ";", "decimal": ","},
         {"encoding": "utf-8-sig", "sep": ";", "decimal": ","},
@@ -91,401 +93,376 @@ def ler_arquivo(arquivo):
     for tentativa in tentativas:
         try:
             df = pd.read_csv(
-                io.BytesIO(bruto),
+                io.BytesIO(raw),
                 encoding=tentativa["encoding"],
                 sep=tentativa["sep"],
                 decimal=tentativa["decimal"]
             )
             if df.shape[1] > 1:
                 df.columns = [str(c).replace("\ufeff", "").strip() for c in df.columns]
-                return df, "csv"
+                return df
         except Exception as e:
             ultimo_erro = e
 
-    raise ValueError(f"Não foi possível ler o arquivo. Detalhe técnico: {ultimo_erro}")
+    raise ValueError(
+        "Não foi possível ler o arquivo enviado. "
+        "Use preferencialmente CSV com separador ';' ou arquivo Excel .xlsx. "
+        f"Detalhe técnico: {ultimo_erro}"
+    )
 
-def normalizar_colunas(df):
-    """
-    Mantém os nomes originais e cria uma versão normalizada para comparação.
-    """
-    mapa = {}
-    for c in df.columns:
-        chave = (
-            str(c)
-            .strip()
-            .upper()
-            .replace("Á", "A")
-            .replace("À", "A")
-            .replace("Ã", "A")
-            .replace("Â", "A")
-            .replace("É", "E")
-            .replace("Ê", "E")
-            .replace("Í", "I")
-            .replace("Ó", "O")
-            .replace("Ô", "O")
-            .replace("Õ", "O")
-            .replace("Ú", "U")
-            .replace("Ç", "C")
-        )
-        mapa[chave] = c
-    return mapa
+
+def normalizar_nome_coluna(nome):
+    return (
+        str(nome)
+        .strip()
+        .upper()
+        .replace("Á", "A").replace("À", "A").replace("Ã", "A").replace("Â", "A")
+        .replace("É", "E").replace("Ê", "E")
+        .replace("Í", "I")
+        .replace("Ó", "O").replace("Ô", "O").replace("Õ", "O")
+        .replace("Ú", "U")
+        .replace("Ç", "C")
+    )
 
 
 def diagnosticar_colunas(df):
-    """
-    Faz o diagnóstico de campos:
-    - obrigatórios
-    - recomendados
-    - hidrogeológicos
-    - auxiliares
-    """
-    mapa = normalizar_colunas(df)
-
+    mapa = {normalizar_nome_coluna(c): c for c in df.columns}
     grupos = {
         "obrigatorios": ["UTM_E_M", "UTM_N_M", "ZONA"],
         "recomendados": [
-            "IDADE",
-            "QUANTIDADE DE TANQUES",
-            "QUANTIDADE DE BOMBAS",
-            "JAQUETADO",
-            "MEDIA DE IDADE DO TANQUE",
-            "NUMERO DE SONDAGENS",
-            "AGUA SUBTERRANEA",
-            "NIVEL_AGUA_M"
+            "IDADE", "QUANTIDADE DE TANQUES", "QUANTIDADE DE BOMBAS", "JAQUETADO",
+            "MEDIA DE IDADE DO TANQUE", "NUMERO DE SONDAGENS", "AGUA SUBTERRANEA", "NIVEL_AGUA_M",
         ],
-        "hidrogeologicos": [
-            "DIST_POCO_MAIS_PROX_M",
-            "POCOS_500M",
-            "POCOS_1KM",
-            "POCOS_5KM"
-        ],
-        "auxiliares": [
-            "JA APRESENTOU CONTAMINACAO ANTES",
-            "CONC. BTEX",
-            "CONC. PAH"
-        ]
+        "hidrogeologicos": ["DIST_POCO_MAIS_PROX_M", "POCOS_500M", "POCOS_1KM", "POCOS_5KM"],
+        "auxiliares": ["JA APRESENTOU CONTAMINACAO ANTES", "CONC. BTEX", "CONC. PAH"],
     }
-
     resultado = {}
     for grupo, campos in grupos.items():
-        encontrados = []
-        faltando = []
-
+        encontrados, faltando = [], []
         for campo in campos:
             if campo in mapa:
                 encontrados.append(mapa[campo])
             else:
                 faltando.append(campo)
-
-        resultado[grupo] = {
-            "encontrados": encontrados,
-            "faltando": faltando
-        }
-
+        resultado[grupo] = {"encontrados": encontrados, "faltando": faltando}
     return resultado
 
 
-def classificar_prontidao(diag):
-    obrig_ok = len(diag["obrigatorios"]["faltando"]) == 0
-    qtd_recomendados = len(diag["recomendados"]["encontrados"])
-    qtd_hidro = len(diag["hidrogeologicos"]["encontrados"])
-
-    if not obrig_ok:
-        return "insuficiente", "A base não tem os campos mínimos para execução."
-    if qtd_recomendados >= 5 and qtd_hidro >= 2:
-        return "alta", "A base está muito bem preparada para análise."
-    if qtd_recomendados >= 3:
-        return "media", "A base pode ser usada, mas alguns campos importantes estão ausentes."
-    return "basica", "A base atende ao mínimo, porém a qualidade da previsão pode ser reduzida."    
-    
-def detectar_coluna_risco(df):
-    for coluna in ["RISK_PROBA_HIDRO", "RISK_PROBA", "risco", "risco_medio"]:
-        if coluna in df.columns:
-            return coluna
+def detect_risk_column(df):
+    for c in ["RISK_PROBA_HIDRO", "RISK_PROBA", "risco", "risco_medio"]:
+        if c in df.columns:
+            return c
     return None
 
-    
-def converter_utm_para_wgs84(df, coluna_e="UTM_E_m", coluna_n="UTM_N_m", coluna_zona="ZONA"):
-    base = df.copy()
-    base[coluna_e] = pd.to_numeric(base[coluna_e], errors="coerce")
-    base[coluna_n] = pd.to_numeric(base[coluna_n], errors="coerce")
-    base[coluna_zona] = base[coluna_zona].astype(str).str.strip().str.upper()
-    base = base.dropna(subset=[coluna_e, coluna_n, coluna_zona]).copy()
 
-    longitudes, latitudes = [], []
-    for _, linha in base.iterrows():
-        zona_numero = "".join(ch for ch in str(linha[coluna_zona]) if ch.isdigit())
-        zona_numero = int(zona_numero) if zona_numero else 22
-        transformador = Transformer.from_crs(f"EPSG:{32700 + zona_numero}", "EPSG:4326", always_xy=True)
-        lon, lat = transformador.transform(linha[coluna_e], linha[coluna_n])
-        longitudes.append(lon)
-        latitudes.append(lat)
+def convert_utm_to_wgs84(df, e_col="UTM_E_m", n_col="UTM_N_m", zone_col="ZONA"):
+    work = df.copy()
+    work[e_col] = pd.to_numeric(work[e_col], errors="coerce")
+    work[n_col] = pd.to_numeric(work[n_col], errors="coerce")
+    work[zone_col] = work[zone_col].astype(str).str.strip().str.upper()
+    work = work.dropna(subset=[e_col, n_col, zone_col]).copy()
 
-    base["lon"] = longitudes
-    base["lat"] = latitudes
-    return base
+    lons, lats = [], []
+    for _, row in work.iterrows():
+        zona_num = "".join(ch for ch in str(row[zone_col]) if ch.isdigit())
+        zona_num = int(zona_num) if zona_num else 22
+        transformer = Transformer.from_crs(f"EPSG:{32700 + zona_num}", "EPSG:4326", always_xy=True)
+        lon, lat = transformer.transform(row[e_col], row[n_col])
+        lons.append(lon)
+        lats.append(lat)
 
-def carregar_limite_goias():
-    if not ARQUIVO_LIMITE_GOIAS.exists():
-        raise FileNotFoundError(f"Não encontrei o shapefile do limite de Goiás em: {ARQUIVO_LIMITE_GOIAS}")
-    goias = gpd.read_file(ARQUIVO_LIMITE_GOIAS)
-    crs_origem = str(goias.crs)
-    return goias.to_crs(epsg=4326), crs_origem
+    work["lon"] = lons
+    work["lat"] = lats
+    return work
 
-def obter_colunas_esperadas_modelo(modelo):
+
+def load_goias_boundary():
+    if not DEFAULT_BOUNDARY_PATH.exists():
+        raise FileNotFoundError(f"Não encontrei o shapefile em: {DEFAULT_BOUNDARY_PATH}")
+    goias = gpd.read_file(DEFAULT_BOUNDARY_PATH)
+    original_crs = str(goias.crs)
+    goias = goias.to_crs(epsg=4326)
+    return goias, original_crs
+
+
+def get_model_expected_columns(model):
     try:
-        if hasattr(modelo, "feature_names_in_"):
-            return list(modelo.feature_names_in_)
+        if hasattr(model, "feature_names_in_"):
+            return list(model.feature_names_in_)
     except Exception:
         pass
     try:
-        preprocessamento = modelo.named_steps["preprocess"]
-        esperadas = []
-        for _, _, colunas in preprocessamento.transformers:
-            if colunas == "drop":
+        pre = model.named_steps["preprocess"]
+        expected = []
+        for _, _, cols in pre.transformers:
+            if cols == "drop":
                 continue
-            if isinstance(colunas, list):
-                esperadas.extend(colunas)
-        return list(dict.fromkeys(esperadas))
+            if isinstance(cols, list):
+                expected.extend(cols)
+        return list(dict.fromkeys(expected))
     except Exception:
-        return None
+        pass
+    return None
 
-def aplicar_modelo(df, modelo):
-    base = df.copy()
-    colunas_esperadas = obter_colunas_esperadas_modelo(modelo)
-    if colunas_esperadas is None:
-        X = base.copy()
+
+def score_with_model(df, model):
+    work = df.copy()
+    expected = get_model_expected_columns(model)
+    if expected is None:
+        X = work.copy()
     else:
-        for coluna in colunas_esperadas:
-            if coluna not in base.columns:
-                base[coluna] = np.nan
-        X = base[colunas_esperadas].copy()
-    base["RISK_PROBA_HIDRO"] = modelo.predict_proba(X)[:, 1]
-    return base, "RISK_PROBA_HIDRO"
+        for col in expected:
+            if col not in work.columns:
+                work[col] = np.nan
+        X = work[expected].copy()
+    proba = model.predict_proba(X)[:, 1]
+    work["RISK_PROBA_HIDRO"] = proba
+    return work, "RISK_PROBA_HIDRO"
 
-def criar_hexagono(x_centro, y_centro, tamanho):
+
+def create_hexagon(center_x, center_y, size):
     return Polygon([
         (
-            x_centro + tamanho * math.cos(math.radians(angulo)),
-            y_centro + tamanho * math.sin(math.radians(angulo))
+            center_x + size * math.cos(math.radians(angle)),
+            center_y + size * math.sin(math.radians(angle))
         )
-        for angulo in range(0, 360, 60)
+        for angle in range(0, 360, 60)
     ])
 
-def construir_grade_hexagonal(pontos_wgs, limite_wgs, coluna_risco, tamanho_hexagono=5000.0):
-    pontos_m = pontos_wgs.to_crs(epsg=3857)
-    limite_m = limite_wgs.to_crs(epsg=3857)
-    minx, miny, maxx, maxy = pontos_m.total_bounds
-    minx -= tamanho_hexagono; miny -= tamanho_hexagono; maxx += tamanho_hexagono; maxy += tamanho_hexagono
-    dx = 1.5 * tamanho_hexagono
-    dy = math.sqrt(3) * tamanho_hexagono
 
-    geometrias, ids = [], []
-    coluna = 0
+def build_hex_grid(gdf_points_wgs, boundary_wgs, risk_col, hex_size=5000.0):
+    gdf_m = gdf_points_wgs.to_crs(epsg=3857)
+    boundary_m = boundary_wgs.to_crs(epsg=3857)
+
+    minx, miny, maxx, maxy = gdf_m.total_bounds
+    minx -= hex_size
+    miny -= hex_size
+    maxx += hex_size
+    maxy += hex_size
+
+    dx = 1.5 * hex_size
+    dy = math.sqrt(3) * hex_size
+
+    hexagons, ids = [], []
+    col = 0
     x = minx
     while x < maxx:
-        y = miny + (0 if coluna % 2 == 0 else dy / 2)
-        linha = 0
+        y_offset = 0 if col % 2 == 0 else dy / 2
+        y = miny + y_offset
+        row = 0
         while y < maxy:
-            geometrias.append(criar_hexagono(x, y, tamanho_hexagono))
-            ids.append(f"hex_{coluna}_{linha}")
-            y += dy; linha += 1
-        x += dx; coluna += 1
+            hexagons.append(create_hexagon(x, y, hex_size))
+            ids.append(f"hex_{col}_{row}")
+            y += dy
+            row += 1
+        x += dx
+        col += 1
 
-    grade = gpd.GeoDataFrame({"hex_id": ids}, geometry=geometrias, crs=pontos_m.crs)
-    grade = gpd.overlay(grade, limite_m, how="intersection")
-    juncao = gpd.sjoin(pontos_m, grade, how="left", predicate="within")
-    estatisticas = juncao.groupby("hex_id").agg(
-        postos=(coluna_risco, "count"),
-        risco_medio=(coluna_risco, "mean"),
-        risco_maximo=(coluna_risco, "max")
+    hex_grid = gpd.GeoDataFrame({"hex_id": ids}, geometry=hexagons, crs=gdf_m.crs)
+    hex_grid = gpd.overlay(hex_grid, boundary_m, how="intersection")
+
+    joined = gpd.sjoin(gdf_m, hex_grid, how="left", predicate="within")
+    hex_stats = joined.groupby("hex_id").agg(
+        postos=(risk_col, "count"),
+        risco_medio=(risk_col, "mean"),
+        risco_max=(risk_col, "max")
     ).reset_index()
-    grade = grade.merge(estatisticas, on="hex_id", how="left")
-    for c in ["postos", "risco_medio", "risco_maximo"]:
-        grade[c] = grade[c].fillna(0)
-    grade = grade[grade["postos"] > 0].copy()
-    grade["hotspot"] = np.where(grade["risco_medio"] >= grade["risco_medio"].quantile(0.75), 1, 0) if len(grade) else 0
-    return grade.to_crs(epsg=4326)
 
-def adicionar_seta_norte(ax, x=0.95, y=0.12):
-    ax.annotate("N", xy=(x, y), xytext=(x, y - 0.10),
-                arrowprops=dict(facecolor="black", width=3, headwidth=10),
-                ha="center", va="center", fontsize=12, xycoords=ax.transAxes)
+    hex_grid = hex_grid.merge(hex_stats, on="hex_id", how="left")
+    hex_grid["postos"] = hex_grid["postos"].fillna(0)
+    hex_grid["risco_medio"] = hex_grid["risco_medio"].fillna(0)
+    hex_grid["risco_max"] = hex_grid["risco_max"].fillna(0)
 
-def construir_mapa_interativo(df_pontos, limite_wgs, grade_wgs, coluna_risco, crs_origem_limite):
-    mapa = folium.Map(
-        location=[float(df_pontos["lat"].mean()), float(df_pontos["lon"].mean())],
-        zoom_start=6, tiles="CartoDB positron", control_scale=True
+    hex_used = hex_grid[hex_grid["postos"] > 0].copy()
+    if len(hex_used) > 0:
+        threshold = hex_used["risco_medio"].quantile(0.75)
+        hex_used["hotspot"] = np.where(hex_used["risco_medio"] >= threshold, 1, 0)
+    else:
+        hex_used["hotspot"] = 0
+
+    return hex_used.to_crs(epsg=4326)
+
+
+def add_north_arrow(ax, x=0.95, y=0.12):
+    ax.annotate(
+        "N",
+        xy=(x, y),
+        xytext=(x, y - 0.10),
+        arrowprops=dict(facecolor="black", width=3, headwidth=10),
+        ha="center",
+        va="center",
+        fontsize=12,
+        xycoords=ax.transAxes
     )
-    folium.GeoJson(limite_wgs, name="Limite de Goiás",
-                   style_function=lambda x: {"color": "black", "weight": 2, "fillOpacity": 0},
-                   tooltip="Estado de Goiás").add_to(mapa)
 
-    minimo = float(grade_wgs["risco_medio"].min()) if len(grade_wgs) else 0.0
-    maximo = float(grade_wgs["risco_medio"].max()) if len(grade_wgs) else 1.0
-    if maximo == minimo:
-        maximo = minimo + 0.0001
 
-    escala = cm.LinearColormap(["#440154", "#31688e", "#35b779", "#fde725"], vmin=minimo, vmax=maximo, caption="Risco médio por hexágono")
+def build_interactive_map(df_points, boundary_wgs, hex_grid_wgs, risk_col, original_boundary_crs):
+    center_lat = float(df_points["lat"].mean())
+    center_lon = float(df_points["lon"].mean())
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=6, tiles="CartoDB positron", control_scale=True)
 
     folium.GeoJson(
-        grade_wgs, name="Grade hexagonal de risco",
-        style_function=lambda f: {
-            "fillColor": escala(f["properties"].get("risco_medio", 0)),
+        boundary_wgs,
+        name="Limite de Goiás",
+        style_function=lambda x: {"color": "black", "weight": 2, "fillOpacity": 0},
+        tooltip="Estado de Goiás"
+    ).add_to(m)
+
+    vmin = float(hex_grid_wgs["risco_medio"].min()) if len(hex_grid_wgs) else 0.0
+    vmax = float(hex_grid_wgs["risco_medio"].max()) if len(hex_grid_wgs) else 1.0
+    if vmax == vmin:
+        vmax = vmin + 0.0001
+
+    colormap = cm.LinearColormap(
+        colors=["#440154", "#31688e", "#35b779", "#fde725"],
+        vmin=vmin,
+        vmax=vmax,
+        caption="Risco médio por hexágono"
+    )
+
+    folium.GeoJson(
+        hex_grid_wgs,
+        name="Grade hexagonal de risco",
+        style_function=lambda feature: {
+            "fillColor": colormap(feature["properties"].get("risco_medio", 0)),
             "color": "black", "weight": 0.5, "fillOpacity": 0.55
         },
         tooltip=folium.GeoJsonTooltip(
-            fields=[c for c in ["hex_id", "postos", "risco_medio", "risco_maximo", "hotspot"] if c in grade_wgs.columns],
+            fields=[c for c in ["hex_id", "postos", "risco_medio", "risco_max", "hotspot"] if c in hex_grid_wgs.columns],
             aliases=["Hexágono", "Nº de postos", "Risco médio", "Risco máximo", "Hotspot"]
         )
-    ).add_to(mapa)
-    escala.add_to(mapa)
+    ).add_to(m)
+    colormap.add_to(m)
 
-    hotspots = grade_wgs[grade_wgs["hotspot"] == 1].copy() if "hotspot" in grade_wgs.columns else grade_wgs.iloc[0:0]
-    if len(hotspots):
-        folium.GeoJson(
-            hotspots, name="Hotspots",
-            style_function=lambda x: {"fillColor": "#ff0000", "color": "#8b0000", "weight": 1.2, "fillOpacity": 0.30},
-            tooltip=folium.GeoJsonTooltip(
-                fields=[c for c in ["hex_id", "risco_medio", "hotspot"] if c in hotspots.columns],
-                aliases=["Hexágono", "Risco médio", "Hotspot"]
-            )
-        ).add_to(mapa)
+    if "hotspot" in hex_grid_wgs.columns:
+        hotspots = hex_grid_wgs[hex_grid_wgs["hotspot"] == 1].copy()
+        if len(hotspots):
+            folium.GeoJson(
+                hotspots,
+                name="Hotspots",
+                style_function=lambda x: {"fillColor": "#ff0000", "color": "#8b0000", "weight": 1.2, "fillOpacity": 0.30},
+                tooltip=folium.GeoJsonTooltip(
+                    fields=[c for c in ["hex_id", "risco_medio", "hotspot"] if c in hotspots.columns],
+                    aliases=["Hexágono", "Risco médio", "Hotspot"]
+                )
+            ).add_to(m)
 
-    agrupador = plugins.MarkerCluster(name="Postos").add_to(mapa)
-    for _, linha in df_pontos.iterrows():
-        risco = float(linha[coluna_risco])
-        popup = [f"<b>Posto:</b> {linha.get('NÚMERO DO POSTO', 'N/D')}",
-                 f"<b>Cidade:</b> {linha.get('CIDADE', 'N/D')}",
-                 f"<b>Risco:</b> {risco:.3f}"]
+    marker_cluster = plugins.MarkerCluster(name="Postos").add_to(m)
+    for _, row in df_points.iterrows():
+        risco = float(row[risk_col])
+        popup_lines = [
+            f"<b>Posto:</b> {row.get('NÚMERO DO POSTO', 'N/D')}",
+            f"<b>Cidade:</b> {row.get('CIDADE', 'N/D')}",
+            f"<b>Risco:</b> {risco:.3f}",
+        ]
         folium.CircleMarker(
-            location=[linha["lat"], linha["lon"]],
+            location=[row["lat"], row["lon"]],
             radius=4 + 10 * risco,
-            color="#d62728", fill=True, fill_color="#d62728", fill_opacity=0.75, weight=1,
-            popup=folium.Popup("<br>".join(popup), max_width=350),
-            tooltip=f"{linha.get('CIDADE', 'Posto')} | risco {risco:.3f}"
-        ).add_to(agrupador)
+            color="#d62728",
+            fill=True,
+            fill_color="#d62728",
+            fill_opacity=0.75,
+            weight=1,
+            popup=folium.Popup("<br>".join(popup_lines), max_width=350),
+            tooltip=f"{row.get('CIDADE', 'Posto')} | risco {risco:.3f}"
+        ).add_to(marker_cluster)
 
-    plugins.HeatMap(df_pontos[["lat", "lon", coluna_risco]].values.tolist(), name="Mapa de calor dos postos",
-                    radius=25, blur=18, min_opacity=0.30).add_to(mapa)
-    plugins.MousePosition(position="bottomleft", separator=" | ", prefix="Coordenadas", num_digits=6).add_to(mapa)
-    plugins.MiniMap(toggle_display=True).add_to(mapa)
-    folium.LayerControl(collapsed=False).add_to(mapa)
+    heat_data = df_points[["lat", "lon", risk_col]].values.tolist()
+    plugins.HeatMap(heat_data, name="Heatmap dos postos", radius=25, blur=18, min_opacity=0.30).add_to(m)
+    plugins.MousePosition(position="bottomleft", separator=" | ", prefix="Coordenadas", num_digits=6).add_to(m)
+    plugins.MiniMap(toggle_display=True).add_to(m)
+    folium.LayerControl(collapsed=False).add_to(m)
 
-    data_geracao = datetime.now().strftime("%d/%m/%Y %H:%M")
-    mapa.get_root().html.add_child(folium.Element(f'<div style="position: fixed; bottom: 85px; left: 10px; z-index: 9999; background-color: white; padding: 8px 10px; border: 1px solid #777; border-radius: 4px; font-size: 12px;"><b>Data de geração:</b><br>{data_geracao}</div>'))
-    mapa.get_root().html.add_child(folium.Element(f'<div style="position: fixed; bottom: 10px; left: 10px; z-index: 9999; background-color: white; padding: 8px 10px; border: 1px solid #777; border-radius: 4px; font-size: 12px;"><b>Datum / sistema de referência:</b><br>Mapa web: WGS84 (EPSG:4326)<br>Limite GO (origem): {crs_origem_limite}</div>'))
-    mapa.get_root().html.add_child(folium.Element('<div style="position: fixed; top: 10px; right: 10px; z-index: 9999; background-color: white; width: 62px; text-align: center; padding: 6px 4px; border: 1px solid #777; border-radius: 4px; font-size: 12px;"><div style="font-weight: bold;">N</div><div style="font-size: 24px; line-height: 22px;">↑</div><div style="font-size: 11px;">Norte</div></div>'))
-    return mapa
+    date_text = datetime.now().strftime("%d/%m/%Y %H:%M")
+    m.get_root().html.add_child(folium.Element(f"""
+    <div style="position: fixed; bottom: 85px; left: 10px; z-index: 9999;
+                background-color: white; padding: 8px 10px; border: 1px solid #777;
+                border-radius: 4px; font-size: 12px;">
+        <b>Data de geração:</b><br>{date_text}
+    </div>"""))
 
-def gerar_mapas_estaticos(pontos_wgs, limite_wgs, grade_wgs, crs_origem_limite):
-    texto_data = datetime.now().strftime("%d/%m/%Y %H:%M")
+    m.get_root().html.add_child(folium.Element(f"""
+    <div style="position: fixed; bottom: 10px; left: 10px; z-index: 9999;
+                background-color: white; padding: 8px 10px; border: 1px solid #777;
+                border-radius: 4px; font-size: 12px;">
+        <b>Datum / CRS:</b><br>
+        Web map: WGS84 (EPSG:4326)<br>
+        Limite GO (origem): {original_boundary_crs}
+    </div>"""))
 
-    def desenhar(coluna, titulo, cor_pontos):
+    m.get_root().html.add_child(folium.Element("""
+    <div style="position: fixed; top: 10px; right: 10px; z-index: 9999;
+                background-color: white; width: 62px; text-align: center;
+                padding: 6px 4px; border: 1px solid #777; border-radius: 4px; font-size: 12px;">
+        <div style="font-weight: bold;">N</div>
+        <div style="font-size: 24px; line-height: 22px;">↑</div>
+        <div style="font-size: 11px;">Norte</div>
+    </div>"""))
+
+    return m
+
+
+def make_static_maps(df_points_wgs, boundary_wgs, hex_grid_wgs, original_boundary_crs):
+    now_text = datetime.now().strftime("%d/%m/%Y %H:%M")
+    postos = df_points_wgs.copy()
+    goias = boundary_wgs.copy()
+    hexes = hex_grid_wgs.copy()
+
+    def make_one(column, title, point_color, cmap):
         fig, ax = plt.subplots(figsize=(10, 10))
-        limite_wgs.boundary.plot(ax=ax, linewidth=1.8, color="black")
-        if len(grade_wgs):
-            grade_wgs.plot(column=coluna, legend=True, ax=ax, cmap="viridis" if coluna=="risco_medio" else "Reds",
-                           edgecolor="black", linewidth=0.3, alpha=0.7)
-        pontos_wgs.plot(ax=ax, markersize=10, color=cor_pontos)
-        ax.set_title(titulo, fontsize=14)
-        ax.set_xlabel("Longitude (graus)"); ax.set_ylabel("Latitude (graus)")
+        goias.boundary.plot(ax=ax, linewidth=1.8, color="black")
+        if len(hexes):
+            hexes.plot(column=column, legend=True, ax=ax, cmap=cmap, edgecolor="black", linewidth=0.3, alpha=0.7)
+        postos.plot(ax=ax, markersize=10, color=point_color)
+        ax.set_title(title, fontsize=14)
+        ax.set_xlabel("Longitude (graus)")
+        ax.set_ylabel("Latitude (graus)")
         ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.4)
-        adicionar_seta_norte(ax)
-        ax.add_artist(AnchoredSizeBar(ax.transData, 1.0, "Escala indicativa", "lower right",
-                                      pad=0.4, color="black", frameon=True, size_vertical=0.01,
-                                      fontproperties=fm.FontProperties(size=9)))
-        ax.text(0.01, 0.01, f'''Gerado em: {texto_data}
+        add_north_arrow(ax)
+        ax.add_artist(AnchoredSizeBar(
+            ax.transData, 1.0, "Escala indicativa", "lower right", pad=0.4,
+            color="black", frameon=True, size_vertical=0.01,
+            fontproperties=fm.FontProperties(size=9)
+        ))
+        ax.text(
+            0.01, 0.01,
+            f"""Gerado em: {now_text}
 Datum do mapa: WGS84 (EPSG:4326)
-Limite GO (origem): {crs_origem_limite}''',
-                transform=ax.transAxes, fontsize=9, verticalalignment="bottom",
-                bbox=dict(facecolor="white", alpha=0.8, edgecolor="gray"))
+Limite GO (origem): {original_boundary_crs}""",
+            transform=ax.transAxes,
+            fontsize=9,
+            verticalalignment="bottom",
+            bbox=dict(facecolor="white", alpha=0.8, edgecolor="gray")
+        )
         fig.tight_layout()
-        arquivo = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-        fig.savefig(arquivo.name, dpi=220)
+        out = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        fig.savefig(out.name, dpi=220)
         plt.close(fig)
-        return arquivo.name
+        return out.name
 
     return (
-        desenhar("risco_medio", "Mapa hexagonal de risco médio — Goiás", "red"),
-        desenhar("hotspot", "Hotspots de risco ambiental — Goiás", "blue")
+        make_one("risco_medio", "Mapa hexagonal de risco médio — Goiás", "red", "viridis"),
+        make_one("hotspot", "Hotspots de risco ambiental — Goiás", "blue", "Reds")
     )
 
-def construir_template_robusto():
+
+def gerar_template():
     return pd.DataFrame({
         "NÚMERO DO POSTO": [1, 2],
-        "CIDADE": ["GOIÂNIA", "ANÁPOLIS"],
+        "UTM_E_m": [686304.36, 687577.99],
+        "UTM_N_m": [8216649.19, 8158767.99],
         "ZONA": ["22K", "22K"],
-        "UTM_E_m": [686304.36, 745210.55],
-        "UTM_N_m": [8216649.19, 8198500.12],
-        "IDADE": [20, 12],
+        "CIDADE": ["GOIANIA", "GOIANIA"],
+        "IDADE": [20, 15],
         "QUANTIDADE DE TANQUES": [4, 3],
         "QUANTIDADE DE BOMBAS": [8, 6],
-        "JAQUETADO": ["SIM", "NÃO"],
-        "MÉDIA DE IDADE DO TANQUE": [15, 10],
-        "NÚMERO DE SONDAGENS ": [4, 2],
-        "ÁGUA SUBTERRÂNEA": [1, 0],
-        "NIVEL_AGUA_m": [10.5, 14.2],
-        "dist_poco_mais_prox_m": [240.0, 680.0],
-        "pocos_500m": [2, 0],
-        "pocos_1km": [7, 3],
-        "pocos_5km": [120, 85],
-        "JÁ APRESENTOU CONTAMINAÇÃO ANTES": [1, 0],
-        "CONC. BTEX": [0, 0],
-        "CONC. PAH": [0, 0],
+        "NIVEL_AGUA_m": [10, 12]
     })
 
-def montar_explicador(modelo, df_para_explicar):
-    preprocessamento = modelo.named_steps["preprocess"]
-    floresta = modelo.named_steps["rf"]
-    X_transformado = preprocessamento.transform(df_para_explicar)
-    if hasattr(X_transformado, "toarray"):
-        X_transformado = X_transformado.toarray()
-    nomes = []
-    try:
-        nomes.extend(list(preprocessamento.named_transformers_["num"].get_feature_names_out()))
-    except Exception:
-        pass
-    try:
-        nomes.extend(list(preprocessamento.named_transformers_["cat"].named_steps["onehot"].get_feature_names_out()))
-    except Exception:
-        pass
-    return shap.TreeExplainer(floresta), X_transformado, nomes
 
-def grafico_importancia_variaveis():
-    if not ARQUIVO_IMPORTANCIA.exists():
-        return None
-    imp = pd.read_csv(ARQUIVO_IMPORTANCIA)
-    if "feature" not in imp.columns or "importance" not in imp.columns:
-        return None
-    topo = imp.head(15).iloc[::-1]
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.barh(topo["feature"], topo["importance"])
-    ax.set_title("Importância das variáveis do modelo")
-    ax.set_xlabel("Importância")
-    fig.tight_layout()
-    return fig
-
-def grafico_explicacao_local(explainer, base_transformada, nomes_variaveis, posicao_linha):
-    valores = explainer.shap_values(base_transformada)
-    if isinstance(valores, list) and len(valores) > 1:
-        contribuicoes = valores[1][posicao_linha]
-    elif isinstance(valores, list):
-        contribuicoes = valores[0][posicao_linha]
-    else:
-        contribuicoes = valores[posicao_linha]
-    serie = pd.Series(contribuicoes, index=nomes_variaveis).sort_values(key=np.abs, ascending=False).head(12).iloc[::-1]
-    fig, ax = plt.subplots(figsize=(8, 6))
-    cores = ["#d62728" if v > 0 else "#1f77b4" for v in serie.values]
-    ax.barh(serie.index, serie.values, color=cores)
-    ax.axvline(0, color="black", linewidth=1)
-    ax.set_title("Principais fatores que influenciaram o risco do posto")
-    ax.set_xlabel("Contribuição para o risco")
-    fig.tight_layout()
-    return fig
-
-with st.expander("Formato esperado do arquivo CSV", expanded=True):
-    st.markdown("""Para que a ferramenta funcione corretamente, o arquivo CSV deve conter **no mínimo**:
+with st.expander("📂 Formato esperado do arquivo CSV", expanded=True):
+    st.markdown("""
+Para que a ferramenta funcione corretamente, o arquivo enviado deve conter **no mínimo**:
 
 ### Campos obrigatórios
 - **UTM_E_m**
@@ -511,275 +488,212 @@ with st.expander("Formato esperado do arquivo CSV", expanded=True):
 ### Histórico e indicadores auxiliares
 - **JÁ APRESENTOU CONTAMINAÇÃO ANTES**
 - **CONC. BTEX**
-- **CONC. PAH**""")
-    st.download_button("Baixar modelo de CSV", data=construir_template_robusto().to_csv(index=False).encode("utf-8"),
-                       file_name="template_georisco_goias.csv", mime="text/csv")
+- **CONC. PAH**
 
-with st.expander("Explicação do modelo", expanded=False):
-    st.markdown("""### Modelo utilizado
-**Floresta aleatória**
+### Regras da versão beta
+- Se os **campos obrigatórios** existirem, o sistema pode continuar.
+- Se os **campos recomendados** existirem, a previsão tende a ser melhor.
+- Se os **campos hidrogeológicos** existirem, a análise fica mais alinhada ao estudo original.
+- Se houver **colunas extras**, elas são aceitas e ignoradas quando não forem necessárias.
 
-### Objetivo
-Estimar a probabilidade de contaminação ambiental em postos de combustíveis.
+### Arquivos aceitos
+- **CSV**
+- **Excel (.xlsx)**
+- **GeoJSON**
+""")
+    st.download_button(
+        "⬇️ Baixar modelo de CSV",
+        data=gerar_template().to_csv(index=False).encode("utf-8"),
+        file_name="template_postos.csv",
+        mime="text/csv"
+    )
 
-### Base de treinamento
-O modelo foi treinado com dados de postos do estado de Goiás, combinando:
-- dados operacionais;
-- dados ambientais;
-- variáveis hidrogeológicas;
-- variáveis espaciais derivadas de poços.
+with st.expander("🧠 Explicação do modelo", expanded=False):
+    st.markdown("""
+O sistema utiliza um modelo de **Machine Learning** treinado com dados de postos de combustíveis.
 
-### Como o resultado é interpretado
-- **0 a 0,30** → baixo risco
-- **0,30 a 0,60** → risco moderado
-- **0,60 a 0,80** → alto risco
-- **0,80 a 1,00** → risco muito alto""")
-
-with st.expander("Importância das variáveis do modelo", expanded=False):
-    st.markdown("""As variáveis com maior importância são aquelas que mais influenciam a separação entre casos de menor e maior risco.""")
-    fig_imp = grafico_importancia_variaveis()
-    if fig_imp is not None:
-        st.pyplot(fig_imp, use_container_width=True)
-    else:
-        st.warning("Não foi possível carregar o arquivo de importância das variáveis.")
-
-with st.expander("Interpretação do risco ambiental", expanded=False):
-    st.markdown("""O risco calculado pela ferramenta **não substitui uma investigação ambiental detalhada**.
-
-Ele funciona como uma **triagem técnica**, ajudando a priorizar áreas para vistoria, investigação, monitoramento e tomada de decisão.""")
-
-st.sidebar.header("Configurações")
-arquivo = st.sidebar.file_uploader("1) Envie a planilha de dados dos postos", type=["csv", "xlsx", "geojson", "json"])
-arquivo_modelo = st.sidebar.file_uploader("2) (Opcional) Arraste aqui o modelo de previsão de risco", type=["joblib"])
-st.sidebar.caption("O modelo de previsão de risco é um arquivo treinado com inteligência artificial. Ele calcula a probabilidade de contaminação ambiental com base nos dados do posto.")
-tamanho_hexagono = st.sidebar.slider("3) Tamanho do hexágono (metros)", 2000, 10000, 5000, 500)
-filtro_municipio = st.sidebar.text_input("4) Filtrar por município (opcional)")
-risco_minimo = st.sidebar.slider("5) Risco mínimo para exibir", 0.0, 1.0, 0.0, 0.01)
-executar = st.sidebar.button("▶️ Gerar análise", type="primary")
-
-if arquivo is not None:
-    try:
-        df, tipo = ler_arquivo(arquivo)
-
-        st.success(f"Arquivo carregado com sucesso. Tipo identificado: {tipo.upper()}")
-
-        st.subheader("Pré-visualização da base")
-        st.dataframe(df.head(10), use_container_width=True)
-
-        st.subheader("Diagnóstico automático da planilha")
-        diag = diagnosticar_colunas(df)
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Obrigatórios encontrados", f'{len(diag["obrigatorios"]["encontrados"])}/3')
-        c2.metric("Recomendados encontrados", f'{len(diag["recomendados"]["encontrados"])}/8')
-        c3.metric("Hidrogeológicos encontrados", f'{len(diag["hidrogeologicos"]["encontrados"])}/4')
-        c4.metric("Auxiliares encontrados", f'{len(diag["auxiliares"]["encontrados"])}/3')
-
-        nivel, mensagem = classificar_prontidao(diag)
-
-        if nivel == "alta":
-            st.success("Prontidão alta: " + mensagem)
-        elif nivel == "media":
-            st.info("Prontidão média: " + mensagem)
-        elif nivel == "basica":
-            st.warning("Prontidão básica: " + mensagem)
-        else:
-            st.error("Prontidão insuficiente: " + mensagem)
-
-        st.markdown(texto_resumo_diagnostico(diag))
-
-        with st.expander("Detalhamento dos campos encontrados e ausentes", expanded=False):
-            for grupo, titulo in [
-                ("obrigatorios", "Campos obrigatórios"),
-                ("recomendados", "Campos recomendados"),
-                ("hidrogeologicos", "Campos hidrogeológicos"),
-                ("auxiliares", "Histórico e indicadores auxiliares"),
-            ]:
-                st.markdown(f"### {titulo}")
-                st.write("**Encontrados:**", diag[grupo]["encontrados"] if diag[grupo]["encontrados"] else "Nenhum")
-                st.write("**Ausentes:**", diag[grupo]["faltando"] if diag[grupo]["faltando"] else "Nenhum")
-
-        st.subheader("Interpretação operacional")
-        st.markdown("""
-- **Obrigatórios ausentes** → o sistema não deve prosseguir para o mapa.
-- **Recomendados ausentes** → o sistema pode rodar, mas com menos qualidade analítica.
-- **Hidrogeológicos ausentes** → o sistema continua, porém fica menos aderente ao estudo original.
-- **Auxiliares ausentes** → não impedem a execução.
+Ele considera informações como:
+- idade do posto e dos tanques
+- quantidade de tanques e bombas
+- presença de água subterrânea
+- histórico de contaminação
+- proximidade de poços de água
+- concentração espacial de poços em diferentes distâncias
 """)
 
-        if len(diag["obrigatorios"]["faltando"]) == 0:
-            st.success("A base possui os campos mínimos necessários para execução.")
-        else:
-            st.error("A base ainda não possui os campos mínimos necessários para execução.")
+with st.expander("📊 Importância das variáveis do modelo", expanded=False):
+    st.markdown("""
+As variáveis com maior importância são aquelas que mais influenciam a separação entre casos de menor e maior risco.
+""")
 
-        st.subheader("Exportação do diagnóstico")
-        resumo = {
-            "tipo_arquivo": [tipo],
-            "total_registros": [len(df)],
-            "obrigatorios_encontrados": [len(diag["obrigatorios"]["encontrados"])],
-            "recomendados_encontrados": [len(diag["recomendados"]["encontrados"])],
-            "hidrogeologicos_encontrados": [len(diag["hidrogeologicos"]["encontrados"])],
-            "auxiliares_encontrados": [len(diag["auxiliares"]["encontrados"])],
-            "classificacao": [nivel],
-            "mensagem": [mensagem],
-        }
-        df_resumo = pd.DataFrame(resumo)
+with st.expander("⚠️ Interpretação do risco ambiental", expanded=False):
+    st.markdown("""
+O risco calculado pela ferramenta **não substitui uma investigação ambiental detalhada**.
+""")
 
-        st.download_button(
-            "Baixar resumo do diagnóstico",
-            data=df_resumo.to_csv(index=False).encode("utf-8"),
-            file_name="diagnostico_georisco_v5.csv",
-            mime="text/csv"
-        )
+st.sidebar.header("⚙️ Configurações")
 
-    except Exception as e:
-        st.error(f"Erro ao ler arquivo: {e}")
+uploaded_csv = st.sidebar.file_uploader(
+    "1) Arraste e solte o arquivo CSV dos postos aqui",
+    type=["csv", "xlsx", "geojson", "json"]
+)
 
-st.subheader("Pré-visualização da base")
-st.dataframe(df.head(10), use_container_width=True)
+uploaded_model = st.sidebar.file_uploader(
+    "2) (Opcional) Arraste aqui o modelo de previsão de risco",
+    type=["joblib"]
+)
 
-faltando = [c for c in ["UTM_E_m", "UTM_N_m", "ZONA"] if c not in df.columns]
-if faltando:
-    st.error(f"O CSV precisa conter: UTM_E_m, UTM_N_m e ZONA. Faltando: {faltando}")
+st.sidebar.caption("""
+O modelo de previsão de risco é um arquivo treinado com inteligência artificial. Ele
+calcula a probabilidade de contaminação ambiental com base nos dados do posto.
+""")
+
+hex_size = st.sidebar.slider("3) Tamanho do hexágono (metros)", 2000, 10000, 5000, 500)
+municipio_filter = st.sidebar.text_input("4) Filtrar por município (opcional)")
+risk_min = st.sidebar.slider("5) Risco mínimo para exibir", 0.0, 1.0, 0.0, 0.01)
+run_button = st.sidebar.button("▶️ Gerar análise", type="primary")
+
+if uploaded_csv is None:
+    st.info("Envie um CSV, Excel ou GeoJSON para começar.")
     st.stop()
 
 try:
-    df_geo = converter_utm_para_wgs84(df)
-    goias_wgs, crs_origem_limite = carregar_limite_goias()
+    df = ler_planilha_segura(uploaded_csv)
+    st.success("Arquivo carregado com sucesso.")
 except Exception as e:
-    st.error(str(e))
+    st.error(f"Erro ao ler o arquivo: {e}")
     st.stop()
 
-if executar:
-    modelo = None
+st.subheader("📋 Pré-visualização da base")
+st.dataframe(df.head(10), use_container_width=True)
+
+diag = diagnosticar_colunas(df)
+if len(diag["obrigatorios"]["faltando"]) > 0:
+    st.error(f"Campos obrigatórios ausentes: {diag['obrigatorios']['faltando']}")
+    st.stop()
+
+with st.expander("🔎 Diagnóstico da base enviada", expanded=False):
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Obrigatórios", f"{len(diag['obrigatorios']['encontrados'])}/3")
+    c2.metric("Recomendados", f"{len(diag['recomendados']['encontrados'])}/8")
+    c3.metric("Hidrogeológicos", f"{len(diag['hidrogeologicos']['encontrados'])}/4")
+    c4.metric("Auxiliares", f"{len(diag['auxiliares']['encontrados'])}/3")
+
+try:
+    df_geo = convert_utm_to_wgs84(df)
+except Exception as e:
+    st.error(f"Erro na conversão UTM -> WGS84: {e}")
+    st.stop()
+
+try:
+    goias_wgs, boundary_original_crs = load_goias_boundary()
+except Exception as e:
+    st.error(f"Erro ao carregar o limite de Goiás: {e}")
+    st.stop()
+
+if run_button:
+    model = None
     try:
-        if arquivo_modelo is not None:
-            modelo = joblib.load(arquivo_modelo)
+        if uploaded_model is not None:
+            model = joblib.load(uploaded_model)
             st.success("Modelo de previsão enviado carregado com sucesso.")
-        elif ARQUIVO_MODELO_PADRAO.exists():
-            modelo = joblib.load(ARQUIVO_MODELO_PADRAO)
-            st.success("Modelo padrão carregado com sucesso.")
+        elif DEFAULT_MODEL_PATH.exists():
+            model = joblib.load(DEFAULT_MODEL_PATH)
+            st.success(f"Modelo local carregado: {DEFAULT_MODEL_PATH}")
     except Exception as e:
         st.error(f"Erro ao carregar o modelo: {e}")
         st.stop()
 
-    if modelo is not None:
+    if model is not None:
         try:
-            df_resultado, coluna_risco = aplicar_modelo(df_geo, modelo)
+            df_scored, risk_col = score_with_model(df_geo, model)
             st.success("Risco calculado pelo modelo com sucesso.")
         except Exception as e:
             st.error(f"Erro ao aplicar o modelo: {e}")
             st.stop()
     else:
-        coluna_detectada = detectar_coluna_risco(df_geo)
-        if coluna_detectada is None:
-            st.error("Nenhum modelo foi carregado e o CSV não possui coluna de risco reconhecida.")
+        detected = detect_risk_column(df_geo)
+        if detected is None:
+            st.error("Nenhum modelo foi carregado e a base não possui coluna de risco reconhecida.")
             st.stop()
-        df_resultado = df_geo.copy()
-        coluna_risco = coluna_detectada
-        st.warning(f"Sem modelo. O sistema utilizará a coluna de risco existente: {coluna_risco}")
+        df_scored = df_geo.copy()
+        risk_col = detected
+        st.warning(f"Sem modelo. Usando a coluna de risco existente: {risk_col}")
 
-    if filtro_municipio and "CIDADE" in df_resultado.columns:
-        df_resultado = df_resultado[df_resultado["CIDADE"].astype(str).str.contains(filtro_municipio, case=False, na=False)].copy()
+    if municipio_filter and "CIDADE" in df_scored.columns:
+        df_scored = df_scored[df_scored["CIDADE"].astype(str).str.contains(municipio_filter, case=False, na=False)].copy()
 
-    df_resultado = df_resultado[pd.to_numeric(df_resultado[coluna_risco], errors="coerce") >= risco_minimo].copy()
-    gdf_pontos = gpd.GeoDataFrame(df_resultado.copy(), geometry=gpd.points_from_xy(df_resultado["lon"], df_resultado["lat"]), crs="EPSG:4326")
+    df_scored = df_scored[pd.to_numeric(df_scored[risk_col], errors="coerce") >= risk_min].copy()
+    gdf_points_wgs = gpd.GeoDataFrame(
+        df_scored.copy(),
+        geometry=gpd.points_from_xy(df_scored["lon"], df_scored["lat"]),
+        crs="EPSG:4326"
+    )
 
     try:
-        grade_hexagonal = construir_grade_hexagonal(gdf_pontos, goias_wgs, coluna_risco, float(tamanho_hexagono))
-        mapa = construir_mapa_interativo(df_resultado, goias_wgs, grade_hexagonal, coluna_risco, crs_origem_limite)
-        mapa_html = mapa.get_root().render()
-        mapa_risco_png, mapa_hotspots_png = gerar_mapas_estaticos(gdf_pontos, goias_wgs, grade_hexagonal, crs_origem_limite)
+        hex_grid_wgs = build_hex_grid(gdf_points_wgs=gdf_points_wgs, boundary_wgs=goias_wgs, risk_col=risk_col, hex_size=float(hex_size))
+        fmap = build_interactive_map(df_scored, goias_wgs, hex_grid_wgs, risk_col, boundary_original_crs)
+        fmap_html = fmap.get_root().render()
+        png_risco, png_hotspots = make_static_maps(gdf_points_wgs, goias_wgs, hex_grid_wgs, boundary_original_crs)
     except Exception as e:
-        st.error(f"Erro ao gerar os produtos espaciais: {e}")
+        st.error(f"Erro ao gerar produtos espaciais: {e}")
         st.stop()
 
-    explicador = base_transformada = nomes_transformados = None
-    if modelo is not None:
-        try:
-            explicador, base_transformada, nomes_transformados = montar_explicador(modelo, df_resultado)
-        except Exception:
-            pass
-
-    st.session_state.analise_concluida = True
-    st.session_state.dados_resultado = df_resultado
-    st.session_state.coluna_risco = coluna_risco
-    st.session_state.grade_hexagonal = grade_hexagonal
-    st.session_state.mapa_html = mapa_html
-    st.session_state.mapa_risco_png = mapa_risco_png
-    st.session_state.mapa_hotspots_png = mapa_hotspots_png
-    st.session_state.modelo_carregado = modelo
-    st.session_state.explainer = explicador
-    st.session_state.nomes_variaveis_transformadas = nomes_transformados
-    st.session_state.base_transformada = base_transformada
-    st.session_state.estatisticas = {
-        "postos_validos": len(df_resultado),
-        "hexagonos_com_postos": int(len(grade_hexagonal)),
-        "hotspots": int(grade_hexagonal["hotspot"].sum()) if "hotspot" in grade_hexagonal.columns else 0,
-        "risco_medio_geral": float(df_resultado[coluna_risco].mean()) if len(df_resultado) else 0.0
+    st.session_state.analysis_done = True
+    st.session_state.df_scored = df_scored
+    st.session_state.risk_col = risk_col
+    st.session_state.hex_grid_wgs = hex_grid_wgs
+    st.session_state.fmap_html = fmap_html
+    st.session_state.png_risco = png_risco
+    st.session_state.png_hotspots = png_hotspots
+    st.session_state.stats = {
+        "postos_validos": len(df_scored),
+        "hexagonos_com_postos": int(len(hex_grid_wgs)),
+        "hotspots": int(hex_grid_wgs["hotspot"].sum()) if "hotspot" in hex_grid_wgs.columns else 0,
+        "risco_medio_geral": float(df_scored[risk_col].mean()) if len(df_scored) else 0.0
     }
-    st.success("Análise concluída. Role a página para visualizar os mapas, explicações e downloads.")
 
-if st.session_state.analise_concluida:
-    df_resultado = st.session_state.dados_resultado
-    coluna_risco = st.session_state.coluna_risco
-    grade_hexagonal = st.session_state.grade_hexagonal
-    mapa_html = st.session_state.mapa_html
-    mapa_risco_png = st.session_state.mapa_risco_png
-    mapa_hotspots_png = st.session_state.mapa_hotspots_png
-    estatisticas = st.session_state.estatisticas
+    st.success("Análise concluída. Role a página para visualizar os mapas e downloads.")
 
-    st.subheader("Estatísticas principais")
+if st.session_state.analysis_done:
+    df_scored = st.session_state.df_scored
+    risk_col = st.session_state.risk_col
+    hex_grid_wgs = st.session_state.hex_grid_wgs
+    fmap_html = st.session_state.fmap_html
+    png_risco = st.session_state.png_risco
+    png_hotspots = st.session_state.png_hotspots
+    stats = st.session_state.stats
+
+    st.subheader("📈 Estatísticas principais")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Postos válidos", estatisticas["postos_validos"])
-    c2.metric("Hexágonos com postos", estatisticas["hexagonos_com_postos"])
-    c3.metric("Hotspots", estatisticas["hotspots"])
-    c4.metric("Risco médio geral", f'{estatisticas["risco_medio_geral"]:.3f}')
+    c1.metric("Postos válidos", stats["postos_validos"])
+    c2.metric("Hexágonos com postos", stats["hexagonos_com_postos"])
+    c3.metric("Hotspots", stats["hotspots"])
+    c4.metric("Risco médio geral", f"{stats['risco_medio_geral']:.3f}")
 
-    st.subheader("Mapa interativo de Goiás")
-    st.components.v1.html(mapa_html, height=700, scrolling=True)
+    st.subheader("🗺️ Mapa interativo de Goiás")
+    st.components.v1.html(fmap_html, height=700, scrolling=True)
 
-    st.subheader("Mapas estáticos com estrutura cartográfica")
+    st.subheader("🖼️ Mapas estáticos com estrutura cartográfica")
     col1, col2 = st.columns(2)
     with col1:
-        st.image(mapa_risco_png, caption="Mapa hexagonal de risco médio — Goiás", use_container_width=True)
+        st.image(png_risco, caption="Mapa hexagonal de risco médio — Goiás", use_container_width=True)
     with col2:
-        st.image(mapa_hotspots_png, caption="Hotspots de risco ambiental — Goiás", use_container_width=True)
+        st.image(png_hotspots, caption="Hotspots de risco ambiental — Goiás", use_container_width=True)
 
-    st.subheader("Explicação individual do risco")
-    if st.session_state.explainer is not None and st.session_state.base_transformada is not None:
-        opcoes = df_resultado.index.tolist()
-        indice_escolhido = st.selectbox("Escolha o índice do posto para explicar", options=opcoes)
-        col_a, col_b = st.columns([1, 1])
-        with col_a:
-            st.dataframe(df_resultado.loc[[indice_escolhido]].drop(columns=["geometry"], errors="ignore"), use_container_width=True)
-        with col_b:
-            figura_local = grafico_explicacao_local(
-                st.session_state.explainer,
-                st.session_state.base_transformada,
-                st.session_state.nomes_variaveis_transformadas,
-                list(df_resultado.index).index(indice_escolhido)
-            )
-            if figura_local is not None:
-                st.pyplot(figura_local, use_container_width=True)
-            else:
-                st.warning("Não foi possível gerar a explicação individual para este posto.")
-    else:
-        st.info("A explicação individual do risco está disponível quando o modelo é carregado corretamente.")
-
-    st.subheader("Downloads")
-    st.download_button("Baixar CSV com risco", data=df_resultado.to_csv(index=False).encode("utf-8"),
+    st.subheader("📦 Downloads")
+    st.download_button("⬇️ Baixar CSV com risco", data=df_scored.to_csv(index=False).encode("utf-8"),
                        file_name="postos_scored_risk_app.csv", mime="text/csv")
-    st.download_button("Baixar grade hexagonal (GeoJSON)", data=grade_hexagonal.to_json().encode("utf-8"),
+    st.download_button("⬇️ Baixar grade hexagonal (GeoJSON)", data=hex_grid_wgs.to_json().encode("utf-8"),
                        file_name="hex_grid_risco_goias_app.geojson", mime="application/geo+json")
-    st.download_button("Baixar mapa interativo (HTML)", data=mapa_html.encode("utf-8"),
-                       file_name="mapa_interativo_georisco_goias.html", mime="text/html")
-    with open(mapa_risco_png, "rb") as f:
-        st.download_button("Baixar PNG (risco médio)", data=f.read(), file_name="mapa_hex_risco_goias.png", mime="image/png")
-    with open(mapa_hotspots_png, "rb") as f:
-        st.download_button("Baixar PNG (hotspots)", data=f.read(), file_name="mapa_hex_hotspots_goias.png", mime="image/png")
+    st.download_button("⬇️ Baixar mapa interativo (HTML)", data=fmap_html.encode("utf-8"),
+                       file_name="mapa_interativo_goias_app.html", mime="text/html")
+    with open(png_risco, "rb") as f:
+        st.download_button("⬇️ Baixar PNG (risco médio)", data=f.read(), file_name="mapa_hex_risco_goias.png", mime="image/png")
+    with open(png_hotspots, "rb") as f:
+        st.download_button("⬇️ Baixar PNG (hotspots)", data=f.read(), file_name="mapa_hex_hotspots_goias.png", mime="image/png")
 
-    st.subheader("Pré-visualização dos resultados")
-    st.dataframe(df_resultado.head(20), use_container_width=True)
+    st.subheader("📋 Pré-visualização dos resultados")
+    st.dataframe(df_scored.head(20), use_container_width=True)
 else:
     st.info("Clique em **Gerar análise** na barra lateral para rodar o processo.")
