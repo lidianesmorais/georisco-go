@@ -330,23 +330,68 @@ def grafico_importancia_variaveis():
     fig.tight_layout()
     return fig
 
-def grafico_explicacao_local(explainer, base_transformada, nomes_variaveis, posicao_linha):
-    valores = explainer.shap_values(base_transformada)
-    if isinstance(valores, list) and len(valores) > 1:
-        contribuicoes = valores[1][posicao_linha]
-    elif isinstance(valores, list):
-        contribuicoes = valores[0][posicao_linha]
-    else:
-        contribuicoes = valores[posicao_linha]
-    serie = pd.Series(contribuicoes, index=nomes_variaveis).sort_values(key=np.abs, ascending=False).head(12).iloc[::-1]
-    fig, ax = plt.subplots(figsize=(8, 6))
-    cores = ["#d62728" if v > 0 else "#1f77b4" for v in serie.values]
-    ax.barh(serie.index, serie.values, color=cores)
-    ax.axvline(0, color="black", linewidth=1)
-    ax.set_title("Principais fatores que influenciaram o risco do posto")
-    ax.set_xlabel("Contribuição para o risco")
-    fig.tight_layout()
-    return fig
+def grafico_explicacao_local(explicador, base_transformada, nomes_variaveis, posicao_linha):
+    """
+    Gera um gráfico com os principais fatores que aumentaram ou reduziram
+    o risco estimado para um posto específico.
+
+    Esta função trata diferentes formatos de saída do SHAP,
+    evitando erro de dimensão (1D x 2D).
+    """
+    try:
+        valores = explicador.shap_values(base_transformada)
+
+        # ----------------------------------------------------
+        # Caso 1: SHAP retorna lista (classificação binária)
+        # ----------------------------------------------------
+        if isinstance(valores, list):
+            if len(valores) > 1:
+                contribuicoes = valores[1][posicao_linha]
+            else:
+                contribuicoes = valores[0][posicao_linha]
+
+        # ----------------------------------------------------
+        # Caso 2: SHAP retorna array 3D
+        # Ex.: (n_amostras, n_variaveis, n_classes)
+        # ----------------------------------------------------
+        elif isinstance(valores, np.ndarray) and valores.ndim == 3:
+            contribuicoes = valores[posicao_linha, :, 1]
+
+        # ----------------------------------------------------
+        # Caso 3: SHAP retorna array 2D
+        # Ex.: (n_amostras, n_variaveis)
+        # ----------------------------------------------------
+        elif isinstance(valores, np.ndarray) and valores.ndim == 2:
+            contribuicoes = valores[posicao_linha]
+
+        else:
+            raise ValueError(f"Formato inesperado do SHAP: {type(valores)} / ndim={getattr(valores, 'ndim', 'N/A')}")
+
+        # Garantir que fique 1D
+        contribuicoes = np.ravel(contribuicoes)
+
+        # Ajustar tamanho caso haja pequena diferença
+        n = min(len(contribuicoes), len(nomes_variaveis))
+        contribuicoes = contribuicoes[:n]
+        nomes_variaveis = nomes_variaveis[:n]
+
+        serie = pd.Series(contribuicoes, index=nomes_variaveis)
+        serie = serie.sort_values(key=np.abs, ascending=False).head(12).iloc[::-1]
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        cores = ["#d62728" if v > 0 else "#1f77b4" for v in serie.values]
+
+        ax.barh(serie.index, serie.values, color=cores)
+        ax.axvline(0, color="black", linewidth=1)
+        ax.set_title("Principais fatores que influenciaram o risco do posto")
+        ax.set_xlabel("Contribuição para o risco")
+        plt.tight_layout()
+
+        return fig
+
+    except Exception as e:
+        st.warning(f"Não foi possível gerar a explicação individual do risco. Detalhe técnico: {e}")
+        return None
 
 with st.expander("📂 Formato esperado do arquivo CSV", expanded=True):
     st.markdown("""Para que a ferramenta funcione corretamente, o arquivo CSV deve conter **no mínimo**:
