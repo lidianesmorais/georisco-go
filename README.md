@@ -1,20 +1,25 @@
-# GeoRisco – Goiás | Versão Final
+#####Autor: Lidiane S Morais
+#####Data: março de 2026
 
-Aplicação web em Streamlit para:
-- carregar CSV de postos;
-- aplicar modelo de previsão de risco (`.joblib`) ou usar coluna de risco existente;
-- explicar ao usuário quais colunas o CSV deve ter;
-- disponibilizar um modelo robusto de CSV para download;
-- apresentar painéis explicativos sobre o modelo, a importância das variáveis e a interpretação do risco;
-- gerar mapa interativo de Goiás;
-- gerar mapas estáticos em PNG;
-- oferecer explicação individual do risco com explicabilidade do modelo;
-- exportar CSV, GeoJSON, HTML e PNG.
+# GeoRisco – Goiás | Layout preservado
 
-## Como executar localmente
+Esta versão mantém o layout e a estrutura visual da versão anterior, mas adiciona:
+- suporte a CSV, Excel (.xlsx) e GeoJSON
+- leitura robusta para arquivos brasileiros
+- diagnóstico automático da base enviada
+- aceitação de colunas extras sem quebrar a análise
 
+## Campos obrigatórios
+- UTM_E_m
+- UTM_N_m
+- ZONA
+
+## Arquivos aceitos
+- CSV
+- Excel (.xlsx)
+- GeoJSON
+
+## Execução
 ```bash
-conda activate ambiental_sig
 pip install -r requirements.txt
 streamlit run app.py
-```
