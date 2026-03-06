@@ -11,3 +11,4 @@ joblib
 matplotlib
 fiona
 pyogrio
+shap
