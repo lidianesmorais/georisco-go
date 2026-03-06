@@ -549,7 +549,7 @@ with st.expander("Interpretação do risco ambiental", expanded=False):
 Ele funciona como uma **triagem técnica**, ajudando a priorizar áreas para vistoria, investigação, monitoramento e tomada de decisão.""")
 
 st.sidebar.header("Configurações")
-arquivo = st.file_uploader("1) Envie a planilha de dados dos postos", type=["csv", "xlsx", "geojson", "json"])
+arquivo = st.sidebar.file_uploader("1) Envie a planilha de dados dos postos", type=["csv", "xlsx", "geojson", "json"])
 arquivo_modelo = st.sidebar.file_uploader("2) (Opcional) Arraste aqui o modelo de previsão de risco", type=["joblib"])
 st.sidebar.caption("O modelo de previsão de risco é um arquivo treinado com inteligência artificial. Ele calcula a probabilidade de contaminação ambiental com base nos dados do posto.")
 tamanho_hexagono = st.sidebar.slider("3) Tamanho do hexágono (metros)", 2000, 10000, 5000, 500)
@@ -626,7 +626,7 @@ if arquivo is not None:
         df_resumo = pd.DataFrame(resumo)
 
         st.download_button(
-            "⬇️ Baixar resumo do diagnóstico",
+            "Baixar resumo do diagnóstico",
             data=df_resumo.to_csv(index=False).encode("utf-8"),
             file_name="diagnostico_georisco_v5.csv",
             mime="text/csv"
