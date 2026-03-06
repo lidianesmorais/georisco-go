@@ -393,7 +393,7 @@ def grafico_explicacao_local(explicador, base_transformada, nomes_variaveis, pos
         st.warning(f"Não foi possível gerar a explicação individual do risco. Detalhe técnico: {e}")
         return None
 
-with st.expander("📂 Formato esperado do arquivo CSV", expanded=True):
+with st.expander("Formato esperado do arquivo CSV", expanded=True):
     st.markdown("""Para que a ferramenta funcione corretamente, o arquivo CSV deve conter **no mínimo**:
 
 ### Campos obrigatórios
@@ -421,10 +421,10 @@ with st.expander("📂 Formato esperado do arquivo CSV", expanded=True):
 - **JÁ APRESENTOU CONTAMINAÇÃO ANTES**
 - **CONC. BTEX**
 - **CONC. PAH**""")
-    st.download_button("⬇️ Baixar modelo de CSV", data=construir_template_robusto().to_csv(index=False).encode("utf-8"),
+    st.download_button("Baixar modelo de CSV", data=construir_template_robusto().to_csv(index=False).encode("utf-8"),
                        file_name="template_georisco_goias.csv", mime="text/csv")
 
-with st.expander("🧠 Explicação do modelo", expanded=False):
+with st.expander("Explicação do modelo", expanded=False):
     st.markdown("""### Modelo utilizado
 **Floresta aleatória**
 
@@ -444,7 +444,7 @@ O modelo foi treinado com dados de postos do estado de Goiás, combinando:
 - **0,60 a 0,80** → alto risco
 - **0,80 a 1,00** → risco muito alto""")
 
-with st.expander("📊 Importância das variáveis do modelo", expanded=False):
+with st.expander("Importância das variáveis do modelo", expanded=False):
     st.markdown("""As variáveis com maior importância são aquelas que mais influenciam a separação entre casos de menor e maior risco.""")
     fig_imp = grafico_importancia_variaveis()
     if fig_imp is not None:
@@ -452,7 +452,7 @@ with st.expander("📊 Importância das variáveis do modelo", expanded=False):
     else:
         st.warning("Não foi possível carregar o arquivo de importância das variáveis.")
 
-with st.expander("⚠️ Interpretação do risco ambiental", expanded=False):
+with st.expander("Interpretação do risco ambiental", expanded=False):
     st.markdown("""O risco calculado pela ferramenta **não substitui uma investigação ambiental detalhada**.
 
 Ele funciona como uma **triagem técnica**, ajudando a priorizar áreas para vistoria, investigação, monitoramento e tomada de decisão.""")
@@ -464,7 +464,7 @@ st.sidebar.caption("O modelo de previsão de risco é um arquivo treinado com in
 tamanho_hexagono = st.sidebar.slider("3) Tamanho do hexágono (metros)", 2000, 10000, 5000, 500)
 filtro_municipio = st.sidebar.text_input("4) Filtrar por município (opcional)")
 risco_minimo = st.sidebar.slider("5) Risco mínimo para exibir", 0.0, 1.0, 0.0, 0.01)
-executar = st.sidebar.button("▶️ Gerar análise", type="primary")
+executar = st.sidebar.button("Gerar análise", type="primary")
 
 if arquivo_csv is None:
     st.info("Envie um CSV para começar.")
@@ -477,7 +477,7 @@ except Exception as e:
     st.error(f"Erro ao ler o CSV: {e}")
     st.stop()
 
-st.subheader("📋 Pré-visualização da base")
+st.subheader("Pré-visualização da base")
 st.dataframe(df.head(10), use_container_width=True)
 
 faltando = [c for c in ["UTM_E_m", "UTM_N_m", "ZONA"] if c not in df.columns]
@@ -571,24 +571,24 @@ if st.session_state.analise_concluida:
     mapa_hotspots_png = st.session_state.mapa_hotspots_png
     estatisticas = st.session_state.estatisticas
 
-    st.subheader("📈 Estatísticas principais")
+    st.subheader("Estatísticas principais")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Postos válidos", estatisticas["postos_validos"])
     c2.metric("Hexágonos com postos", estatisticas["hexagonos_com_postos"])
     c3.metric("Hotspots", estatisticas["hotspots"])
     c4.metric("Risco médio geral", f'{estatisticas["risco_medio_geral"]:.3f}')
 
-    st.subheader("🗺️ Mapa interativo de Goiás")
+    st.subheader("Mapa interativo de Goiás")
     st.components.v1.html(mapa_html, height=700, scrolling=True)
 
-    st.subheader("🖼️ Mapas estáticos com estrutura cartográfica")
+    st.subheader("Mapas estáticos com estrutura cartográfica")
     col1, col2 = st.columns(2)
     with col1:
         st.image(mapa_risco_png, caption="Mapa hexagonal de risco médio — Goiás", use_container_width=True)
     with col2:
         st.image(mapa_hotspots_png, caption="Hotspots de risco ambiental — Goiás", use_container_width=True)
 
-    st.subheader("🧩 Explicação individual do risco")
+    st.subheader("Explicação individual do risco")
     if st.session_state.explainer is not None and st.session_state.base_transformada is not None:
         opcoes = df_resultado.index.tolist()
         indice_escolhido = st.selectbox("Escolha o índice do posto para explicar", options=opcoes)
@@ -609,19 +609,19 @@ if st.session_state.analise_concluida:
     else:
         st.info("A explicação individual do risco está disponível quando o modelo é carregado corretamente.")
 
-    st.subheader("📦 Downloads")
-    st.download_button("⬇️ Baixar CSV com risco", data=df_resultado.to_csv(index=False).encode("utf-8"),
+    st.subheader("Downloads")
+    st.download_button("Baixar CSV com risco", data=df_resultado.to_csv(index=False).encode("utf-8"),
                        file_name="postos_scored_risk_app.csv", mime="text/csv")
-    st.download_button("⬇️ Baixar grade hexagonal (GeoJSON)", data=grade_hexagonal.to_json().encode("utf-8"),
+    st.download_button("Baixar grade hexagonal (GeoJSON)", data=grade_hexagonal.to_json().encode("utf-8"),
                        file_name="hex_grid_risco_goias_app.geojson", mime="application/geo+json")
-    st.download_button("⬇️ Baixar mapa interativo (HTML)", data=mapa_html.encode("utf-8"),
+    st.download_button("Baixar mapa interativo (HTML)", data=mapa_html.encode("utf-8"),
                        file_name="mapa_interativo_georisco_goias.html", mime="text/html")
     with open(mapa_risco_png, "rb") as f:
-        st.download_button("⬇️ Baixar PNG (risco médio)", data=f.read(), file_name="mapa_hex_risco_goias.png", mime="image/png")
+        st.download_button("Baixar PNG (risco médio)", data=f.read(), file_name="mapa_hex_risco_goias.png", mime="image/png")
     with open(mapa_hotspots_png, "rb") as f:
-        st.download_button("⬇️ Baixar PNG (hotspots)", data=f.read(), file_name="mapa_hex_hotspots_goias.png", mime="image/png")
+        st.download_button("Baixar PNG (hotspots)", data=f.read(), file_name="mapa_hex_hotspots_goias.png", mime="image/png")
 
-    st.subheader("📋 Pré-visualização dos resultados")
+    st.subheader("Pré-visualização dos resultados")
     st.dataframe(df_resultado.head(20), use_container_width=True)
 else:
     st.info("Clique em **Gerar análise** na barra lateral para rodar o processo.")
